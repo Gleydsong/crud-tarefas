@@ -1,53 +1,15 @@
-const fs = require('fs');
-const path = require('path');
-
-const DATA_FILE = path.join(__dirname, '..', 'data', 'tasks.json');
-
-function readTasks() {
-  try {
-    const data = fs.readFileSync(DATA_FILE, 'utf8');
-    return JSON.parse(data);
-  } catch (error) {
-    return [];
-  }
-}
-
-function writeTasks(tasks) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(tasks, null, 2));
-}
-
-function generateId() {
-  return Date.now().toString(36) + Math.random().toString(36).substr(2);
-}
-
-function parseBody(req) {
-  return new Promise((resolve, reject) => {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => {
-      try {
-        resolve(JSON.parse(body));
-      } catch (error) {
-        reject(new Error('Invalid JSON'));
-      }
-    });
-    req.on('error', reject);
-  });
-}
-
-function sendJSON(res, statusCode, data) {
-  res.writeHead(statusCode, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(data));
-}
+const database = require('./database/database');
+const { parseBody, sendJSON, parseUrl, extractId } = require('./middleware/middleware');
 
 function routes(req, res) {
-  const { method, url } = req;
-  const parsedUrl = new URL(url, `http://${req.headers.host}`);
+  const { method } = req;
+  const url = parseUrl(req);
+  const pathname = url.pathname;
 
-  if (method === 'GET' && parsedUrl.pathname === '/tasks') {
-    const tasks = readTasks();
-    const titleFilter = parsedUrl.searchParams.get('title');
-    const descriptionFilter = parsedUrl.searchParams.get('description');
+  if (method === 'GET' && pathname === '/tasks') {
+    const tasks = database.getAllTasks();
+    const titleFilter = url.searchParams.get('title');
+    const descriptionFilter = url.searchParams.get('description');
 
     let filteredTasks = tasks;
     if (titleFilter) {
@@ -65,7 +27,7 @@ function routes(req, res) {
     return true;
   }
 
-  if (method === 'POST' && parsedUrl.pathname === '/tasks') {
+  if (method === 'POST' && pathname === '/tasks') {
     parseBody(req).then(body => {
       const { title, description } = body;
 
@@ -74,20 +36,7 @@ function routes(req, res) {
         return;
       }
 
-      const tasks = readTasks();
-      const now = new Date().toISOString();
-      const newTask = {
-        id: generateId(),
-        title,
-        description: description || '',
-        completed_at: null,
-        created_at: now,
-        updated_at: now
-      };
-
-      tasks.push(newTask);
-      writeTasks(tasks);
-
+      const newTask = database.createTask(title, description);
       sendJSON(res, 201, newTask);
     }).catch(() => {
       sendJSON(res, 400, { error: 'Invalid request body' });
@@ -95,71 +44,48 @@ function routes(req, res) {
     return true;
   }
 
-  if (method === 'PUT' && parsedUrl.pathname.startsWith('/tasks/')) {
-    const id = parsedUrl.pathname.split('/')[2];
-    const tasks = readTasks();
-    const taskIndex = tasks.findIndex(t => t.id === id);
+  if (method === 'PUT' && pathname.startsWith('/tasks/')) {
+    const id = extractId(url, '/tasks');
+    const task = database.getTaskById(id);
 
-    if (taskIndex === -1) {
+    if (!task) {
       sendJSON(res, 404, { error: 'Task not found' });
       return true;
     }
 
     parseBody(req).then(body => {
       const { title, description } = body;
-
-      tasks[taskIndex] = {
-        ...tasks[taskIndex],
-        title: title !== undefined ? title : tasks[taskIndex].title,
-        description: description !== undefined ? description : tasks[taskIndex].description,
-        updated_at: new Date().toISOString()
-      };
-
-      writeTasks(tasks);
-      sendJSON(res, 200, tasks[taskIndex]);
+      const updatedTask = database.updateTask(id, title, description);
+      sendJSON(res, 200, updatedTask);
     }).catch(() => {
       sendJSON(res, 400, { error: 'Invalid request body' });
     });
     return true;
   }
 
-  if (method === 'DELETE' && parsedUrl.pathname.startsWith('/tasks/')) {
-    const id = parsedUrl.pathname.split('/')[2];
-    const tasks = readTasks();
-    const taskIndex = tasks.findIndex(t => t.id === id);
+  if (method === 'DELETE' && pathname.startsWith('/tasks/')) {
+    const id = extractId(url, '/tasks');
+    const deletedTask = database.deleteTask(id);
 
-    if (taskIndex === -1) {
+    if (!deletedTask) {
       sendJSON(res, 404, { error: 'Task not found' });
       return true;
     }
-
-    const deletedTask = tasks.splice(taskIndex, 1)[0];
-    writeTasks(tasks);
 
     sendJSON(res, 200, deletedTask);
     return true;
   }
 
-  if (method === 'PATCH' && parsedUrl.pathname.match(/^\/tasks\/[^/]+\/complete$/)) {
-    const id = parsedUrl.pathname.split('/')[2];
-    const tasks = readTasks();
-    const taskIndex = tasks.findIndex(t => t.id === id);
+  if (method === 'PATCH' && pathname.match(/^\/tasks\/[^/]+\/complete$/)) {
+    const id = extractId(url, '/tasks');
+    const task = database.toggleCompleteTask(id);
 
-    if (taskIndex === -1) {
+    if (!task) {
       sendJSON(res, 404, { error: 'Task not found' });
       return true;
     }
 
-    const now = new Date().toISOString();
-    if (tasks[taskIndex].completed_at === null) {
-      tasks[taskIndex].completed_at = now;
-    } else {
-      tasks[taskIndex].completed_at = null;
-    }
-    tasks[taskIndex].updated_at = now;
-
-    writeTasks(tasks);
-    sendJSON(res, 200, tasks[taskIndex]);
+    sendJSON(res, 200, task);
     return true;
   }
 
